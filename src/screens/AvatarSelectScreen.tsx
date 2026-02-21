@@ -10,7 +10,9 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
 import { AVATARS, Avatar } from '../data/avatars';
+import { AvatarSelectNavProp } from '../types';
 import HeroAvatar from '../components/HeroAvatar';
 import AvatarCarousel from '../components/AvatarCarousel';
 
@@ -18,34 +20,36 @@ const { height: SCREEN_H } = Dimensions.get('window');
 
 export default function AvatarSelectScreen() {
   const insets = useSafeAreaInsets();
+  const navigation = useNavigation<AvatarSelectNavProp>();
   const [selected, setSelected] = useState<Avatar>(AVATARS[0]);
-
-  // Crossfade between hero avatars on selection change
-  const fadeAnim = useRef(new Animated.Value(1)).current;
   const [displayedAvatar, setDisplayedAvatar] = useState<Avatar>(AVATARS[0]);
 
+  // Crossfade for hero + name
+  const fadeAnim = useRef(new Animated.Value(1)).current;
+  // Ambient glow color follows displayedAvatar (in sync with crossfade)
+  const glowColorRef = useRef(displayedAvatar.glowColor);
+
   const handleSelectAvatar = (avatar: Avatar) => {
-    // Fade out → swap → fade in
+    setSelected(avatar);
     Animated.timing(fadeAnim, {
       toValue: 0,
       duration: 180,
       useNativeDriver: true,
     }).start(() => {
       setDisplayedAvatar(avatar);
+      glowColorRef.current = avatar.glowColor;
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 260,
         useNativeDriver: true,
       }).start();
     });
-    setSelected(avatar);
   };
 
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" />
 
-      {/* Deep dark background */}
       <LinearGradient
         colors={['#0D0F1E', '#0A0B14', '#080910']}
         style={StyleSheet.absoluteFill}
@@ -53,39 +57,37 @@ export default function AvatarSelectScreen() {
         end={{ x: 0.5, y: 1 }}
       />
 
-      {/* Radial ambient behind hero */}
+      {/* Ambient glow synced to displayedAvatar (updates after crossfade) */}
       <View
         style={[
           styles.ambientGlow,
           {
-            backgroundColor: selected.glowColor,
+            backgroundColor: displayedAvatar.glowColor,
             top: SCREEN_H * 0.12,
           },
         ]}
       />
 
-      {/* ── Header ── */}
+      {/* Header */}
       <View style={[styles.header, { paddingTop: insets.top + 16 }]}>
         <Text style={styles.screenTitle}>Choose your guide</Text>
       </View>
 
-      {/* ── Hero section ── */}
+      {/* Hero */}
       <View style={styles.heroZone}>
-        {/* Avatar name + subtitle */}
         <Animated.View style={[styles.nameBadge, { opacity: fadeAnim }]}>
-          <Text style={[styles.avatarName, { color: selected.accentColor }]}>
+          <Text style={[styles.avatarName, { color: displayedAvatar.accentColor }]}>
             {displayedAvatar.name}
           </Text>
           <Text style={styles.avatarSubtitle}>{displayedAvatar.subtitle}</Text>
         </Animated.View>
 
-        {/* Hero avatar with crossfade */}
         <Animated.View style={{ opacity: fadeAnim }}>
           <HeroAvatar avatar={displayedAvatar} />
         </Animated.View>
       </View>
 
-      {/* ── Carousel ── */}
+      {/* Carousel */}
       <View style={styles.carouselZone}>
         <AvatarCarousel
           avatars={AVATARS}
@@ -94,16 +96,18 @@ export default function AvatarSelectScreen() {
         />
       </View>
 
-      {/* ── CTA ── */}
+      {/* CTA */}
       <View style={[styles.ctaZone, { paddingBottom: insets.bottom + 24 }]}>
         <Pressable
           style={({ pressed }) => [
             styles.ctaButton,
+            { shadowColor: displayedAvatar.glowColor },
             pressed && styles.ctaButtonPressed,
           ]}
+          onPress={() => navigation.navigate('Hybrid', { avatar: displayedAvatar })}
         >
           <LinearGradient
-            colors={[selected.glowColor, selected.primaryColor]}
+            colors={[displayedAvatar.glowColor, displayedAvatar.primaryColor]}
             style={styles.ctaGradient}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
@@ -113,9 +117,7 @@ export default function AvatarSelectScreen() {
           </LinearGradient>
         </Pressable>
 
-        <Text style={styles.ctaHint}>
-          You can switch personas anytime
-        </Text>
+        <Text style={styles.ctaHint}>You can switch personas anytime</Text>
       </View>
     </View>
   );
@@ -178,7 +180,6 @@ const styles = StyleSheet.create({
     width: '100%',
     borderRadius: 50,
     overflow: 'hidden',
-    shadowColor: '#7B5CF0',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.45,
     shadowRadius: 18,

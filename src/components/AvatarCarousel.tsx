@@ -6,12 +6,10 @@ import {
   StyleSheet,
   Text,
   View,
-  Dimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Avatar } from '../data/avatars';
 
-const { width: SCREEN_W } = Dimensions.get('window');
 const ITEM_SIZE = 64;
 const ITEM_SIZE_ACTIVE = 92;
 const ITEM_MARGIN = 10;
