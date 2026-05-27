@@ -40,14 +40,23 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
-HF_MODEL: str = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
+# Default model works on free HF accounts (no Pro subscription needed)
+HF_MODEL: str = os.getenv("HF_MODEL", "HuggingFaceH4/zephyr-7b-beta")
 HISTORY_LIMIT: int = int(os.getenv("HISTORY_LIMIT", "12"))
 MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "350"))
 
+# Comma-separated list of chat IDs the bot will respond in.
+# Leave empty to allow any group.
+# Find your group's ID by adding @userinfobot to the group.
+_raw_allowed = os.getenv("ALLOWED_CHAT_IDS", "")
+ALLOWED_CHAT_IDS: set[int] = (
+    {int(cid.strip()) for cid in _raw_allowed.split(",") if cid.strip()}
+    if _raw_allowed.strip()
+    else set()
+)
+
 # Bot-to-bot back-and-forth settings
-# Maximum consecutive bot↔bot exchanges before going quiet (prevents infinite loops)
 BOT_EXCHANGE_LIMIT: int = int(os.getenv("BOT_EXCHANGE_LIMIT", "6"))
-# Seconds to wait after hitting the exchange limit before engaging again
 BOT_COOLDOWN: int = int(os.getenv("BOT_COOLDOWN", "60"))
 
 PERSONAS_FILE = Path("personas.json")
@@ -162,9 +171,16 @@ async def generate_reply(persona: str, history: list, user_text: str) -> str:
 # Handlers
 # ---------------------------------------------------------------------------
 
+def _allowed(chat_id: int) -> bool:
+    return not ALLOWED_CHAT_IDS or chat_id in ALLOWED_CHAT_IDS
+
+
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message or not message.text:
+        return
+
+    if not _allowed(message.chat_id):
         return
 
     sender = message.from_user
@@ -229,6 +245,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message or not message.forum_topic_created:
+        return
+
+    if not _allowed(message.chat_id):
         return
 
     key = topic_key(message)
