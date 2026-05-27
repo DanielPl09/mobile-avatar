@@ -3,21 +3,21 @@
     "defaults": {
       "workspace": "~/.openclaw/workspace",
       "model": {
-        "primary": "huggingface/meta-llama/Llama-3.3-70B-Instruct",
+        "primary": "huggingface/Qwen/Qwen3-235B-A22B-Instruct",
         "fallbacks": [
-          "huggingface/deepseek-ai/DeepSeek-R1",
-          "huggingface/Qwen/Qwen3-32B"
+          "huggingface/deepseek-ai/DeepSeek-V3.2",
+          "huggingface/moonshotai/Kimi-K2-Instruct"
         ]
       },
       "models": {
-        "huggingface/meta-llama/Llama-3.3-70B-Instruct": {
-          "alias": "Llama 3.3 70B"
+        "huggingface/Qwen/Qwen3-235B-A22B-Instruct": {
+          "alias": "Qwen3 235B"
         },
-        "huggingface/deepseek-ai/DeepSeek-R1": {
-          "alias": "DeepSeek R1"
+        "huggingface/deepseek-ai/DeepSeek-V3.2": {
+          "alias": "DeepSeek V3.2"
         },
-        "huggingface/Qwen/Qwen3-32B": {
-          "alias": "Qwen3 32B"
+        "huggingface/moonshotai/Kimi-K2-Instruct": {
+          "alias": "Kimi K2"
         }
       }
     },
