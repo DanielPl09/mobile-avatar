@@ -37,7 +37,7 @@
     "telegram": {
       "enabled": true,
 
-      "dmPolicy": "pairing",
+      "dmPolicy": "open",
 
       "groupPolicy": "open",
 
@@ -52,9 +52,10 @@
       "linkPreview": false,
 
       "customCommands": [
-        { "command": "help", "description": "Show available commands" },
-        { "command": "reset", "description": "Start a new conversation" },
-        { "command": "model", "description": "Show current AI model" }
+        { "command": "ask", "description": "Ask the AI a question" },
+        { "command": "newchat", "description": "Start a fresh conversation" },
+        { "command": "whichmodel", "description": "Show which AI model is active" },
+        { "command": "about", "description": "About this bot" }
       ]
     }
   },
@@ -80,6 +81,13 @@
     "file": "~/.openclaw/openclaw.log",
     "consoleLevel": "info",
     "consoleStyle": "pretty"
+  },
+
+  "gateway": {
+    "mode": "local",
+    "auth": {
+      "mode": "token"
+    }
   },
 
   "session": {
