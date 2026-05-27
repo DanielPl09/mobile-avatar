@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Start the OpenClaw Gateway with all required env vars loaded from .env
+# Start the OpenClaw Gateway in a persistent tmux session.
+# The session survives shell exits and reconnects on re-attach.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SESSION="openclaw"
 
-# Load .env
+# Load secrets
 ENV_FILE="$SCRIPT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
@@ -15,9 +17,28 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 
-echo "Starting OpenClaw Gateway..."
-echo "  Telegram: enabled (long-poll mode)"
-echo "  Model:    huggingface/meta-llama/Llama-3.3-70B-Instruct"
-echo ""
+# Kill stale session if present
+tmux kill-session -t "$SESSION" 2>/dev/null || true
+sleep 1
 
-exec openclaw gateway run
+echo "Starting OpenClaw Gateway in tmux session '$SESSION'..."
+
+tmux new-session -d -s "$SESSION" \
+  -e "TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}" \
+  -e "OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}" \
+  -e "HUGGINGFACE_HUB_TOKEN=${HUGGINGFACE_HUB_TOKEN:-}" \
+  "openclaw gateway run --force"
+
+sleep 4
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+  echo "✓ Gateway running in tmux session '$SESSION'"
+  echo ""
+  echo "  Attach to logs:  tmux attach -t $SESSION"
+  echo "  Stop gateway:    tmux kill-session -t $SESSION"
+  echo "  Check status:    openclaw channels status"
+else
+  echo "✗ Gateway failed to start. Check logs:"
+  echo "  tmux capture-pane -t $SESSION -p"
+  exit 1
+fi
