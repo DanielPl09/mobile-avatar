@@ -1,0 +1,93 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw/workspace",
+      "model": {
+        "primary": "huggingface/meta-llama/Llama-3.3-70B-Instruct",
+        "fallbacks": [
+          "huggingface/deepseek-ai/DeepSeek-R1",
+          "huggingface/Qwen/Qwen3-32B"
+        ]
+      },
+      "models": {
+        "huggingface/meta-llama/Llama-3.3-70B-Instruct": {
+          "alias": "Llama 3.3 70B"
+        },
+        "huggingface/deepseek-ai/DeepSeek-R1": {
+          "alias": "DeepSeek R1"
+        },
+        "huggingface/Qwen/Qwen3-32B": {
+          "alias": "Qwen3 32B"
+        }
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "identity": {
+          "name": "OpenClaw",
+          "emoji": "🦞",
+          "theme": "helpful AI assistant"
+        }
+      }
+    ]
+  },
+
+  "channels": {
+    "telegram": {
+      "enabled": true,
+
+      "dmPolicy": "pairing",
+
+      "groupPolicy": "open",
+
+      "groups": {
+        "*": {
+          "requireMention": true
+        }
+      },
+
+      "historyLimit": 50,
+      "replyToMode": "first",
+      "linkPreview": false,
+
+      "customCommands": [
+        { "command": "help", "description": "Show available commands" },
+        { "command": "reset", "description": "Start a new conversation" },
+        { "command": "model", "description": "Show current AI model" }
+      ]
+    }
+  },
+
+  "messages": {
+    "visibleReplies": "automatic",
+    "groupChat": {
+      "historyLimit": 50,
+      "unmentionedInbound": "room_event",
+      "visibleReplies": "automatic"
+    },
+    "queue": {
+      "mode": "followup",
+      "debounceMs": 500,
+      "byChannel": {
+        "telegram": "followup"
+      }
+    }
+  },
+
+  "logging": {
+    "level": "info",
+    "file": "~/.openclaw/openclaw.log",
+    "consoleLevel": "info",
+    "consoleStyle": "pretty"
+  },
+
+  "session": {
+    "scope": "per-sender",
+    "reset": {
+      "mode": "daily",
+      "atHour": 4
+    },
+    "resetTriggers": ["/new", "/reset"]
+  }
+}
