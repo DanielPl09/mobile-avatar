@@ -16,6 +16,7 @@ Commands (usable by group admins):
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,15 +41,22 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
 HF_MODEL: str = os.getenv("HF_MODEL", "mistralai/Mistral-7B-Instruct-v0.3")
-# How many recent exchanges to keep in context per topic
 HISTORY_LIMIT: int = int(os.getenv("HISTORY_LIMIT", "12"))
-# Max tokens the model may generate per reply
 MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "350"))
+
+# Bot-to-bot back-and-forth settings
+# Maximum consecutive bot↔bot exchanges before going quiet (prevents infinite loops)
+BOT_EXCHANGE_LIMIT: int = int(os.getenv("BOT_EXCHANGE_LIMIT", "6"))
+# Seconds to wait after hitting the exchange limit before engaging again
+BOT_COOLDOWN: int = int(os.getenv("BOT_COOLDOWN", "60"))
 
 PERSONAS_FILE = Path("personas.json")
 
 # Persisted state: str(topic_id) -> {"name": str, "persona": str, "history": list}
 state: dict[str, dict] = {}
+
+# In-memory bot-exchange counters: str(topic_id) -> {"count": int, "paused_at": float|None}
+bot_exchange: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -70,12 +78,10 @@ def save_state() -> None:
 # ---------------------------------------------------------------------------
 
 def topic_key(message: Message) -> str:
-    # message_thread_id is None for the main (non-forum) chat → use "0"
     return str(message.message_thread_id or 0)
 
 
 def get_topic(key: str, name: str = "") -> dict:
-    """Return the topic entry, creating a default one if absent."""
     if key not in state:
         persona = _default_persona(name or f"topic-{key}")
         state[key] = {"name": name, "persona": persona, "history": []}
@@ -91,6 +97,46 @@ def _default_persona(topic_name: str) -> str:
         f"Be conversational, opinionated, and realistic — avoid sounding like an AI assistant. "
         f"Keep replies short and casual unless the conversation calls for detail."
     )
+
+
+# ---------------------------------------------------------------------------
+# Bot-exchange throttle
+# ---------------------------------------------------------------------------
+
+def should_reply_to_bot(key: str) -> bool:
+    """
+    Return True if we are allowed to reply to another bot right now.
+    Increments the exchange counter; resets it after the cooldown period.
+    """
+    entry = bot_exchange.setdefault(key, {"count": 0, "paused_at": None})
+
+    # If currently in cooldown, check whether it has expired
+    if entry["paused_at"] is not None:
+        elapsed = time.monotonic() - entry["paused_at"]
+        if elapsed < BOT_COOLDOWN:
+            logger.info(
+                "topic=%s bot-exchange cooldown: %ds left",
+                key,
+                int(BOT_COOLDOWN - elapsed),
+            )
+            return False
+        # Cooldown expired — reset
+        entry["count"] = 0
+        entry["paused_at"] = None
+
+    entry["count"] += 1
+
+    if entry["count"] > BOT_EXCHANGE_LIMIT:
+        logger.info("topic=%s bot-exchange limit hit, entering cooldown", key)
+        entry["paused_at"] = time.monotonic()
+        return False
+
+    return True
+
+
+def reset_bot_exchange(key: str) -> None:
+    """Call when a human sends a message — resets the exchange counter."""
+    bot_exchange[key] = {"count": 0, "paused_at": None}
 
 
 # ---------------------------------------------------------------------------
@@ -121,24 +167,43 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not message or not message.text:
         return
 
-    bot_user = await context.bot.get_me()
-    text = message.text.strip()
-
-    # Respond only when mentioned or when replying directly to the bot
-    mentioned = f"@{bot_user.username}" in text
-    replied_to_bot = (
-        message.reply_to_message is not None
-        and message.reply_to_message.from_user is not None
-        and message.reply_to_message.from_user.id == bot_user.id
-    )
-
-    if not (mentioned or replied_to_bot):
+    sender = message.from_user
+    if not sender:
         return
 
-    # Strip the mention so it doesn't end up in the prompt
-    clean = text.replace(f"@{bot_user.username}", "").strip() or "Hey!"
+    bot_user = await context.bot.get_me()
 
+    # Ignore our own messages
+    if sender.id == bot_user.id:
+        return
+
+    text = message.text.strip()
     key = topic_key(message)
+    sender_is_bot = sender.is_bot
+
+    # --- Decide whether to respond ---
+    if sender_is_bot:
+        # Another bot sent this message — engage in back-and-forth if allowed
+        if not should_reply_to_bot(key):
+            return
+        clean = text
+        logger.info("Replying to bot '%s' in topic %s", sender.username, key)
+    else:
+        # Human message: reset exchange counter, then check trigger conditions
+        reset_bot_exchange(key)
+
+        mentioned = f"@{bot_user.username}" in text
+        replied_to_bot = (
+            message.reply_to_message is not None
+            and message.reply_to_message.from_user is not None
+            and message.reply_to_message.from_user.id == bot_user.id
+        )
+
+        if not (mentioned or replied_to_bot):
+            return
+
+        clean = text.replace(f"@{bot_user.username}", "").strip() or "Hey!"
+
     data = get_topic(key)
 
     try:
@@ -162,7 +227,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Capture the topic name when a new forum topic is opened."""
     message = update.effective_message
     if not message or not message.forum_topic_created:
         return
@@ -171,7 +235,6 @@ async def on_topic_created(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     name = message.forum_topic_created.name
     logger.info("New topic '%s' (key=%s)", name, key)
 
-    # Register the topic with its real name
     if key not in state:
         state[key] = {"name": name, "persona": _default_persona(name), "history": []}
     else:
@@ -189,7 +252,7 @@ async def cmd_set_persona(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     key = topic_key(message)
     entry = get_topic(key)
     entry["persona"] = persona
-    entry["history"] = []  # fresh start with new persona
+    entry["history"] = []
     save_state()
     await message.reply_text(f"Persona updated. History cleared.\n\n{persona[:200]}")
 
@@ -226,13 +289,14 @@ def main() -> None:
     app.add_handler(CommandHandler("getpersona", cmd_get_persona))
     app.add_handler(CommandHandler("clearhistory", cmd_clear_history))
 
-    # Capture new topic creation to record the topic name
     app.add_handler(
         MessageHandler(filters.StatusUpdate.FORUM_TOPIC_CREATED, on_topic_created)
     )
 
-    # Main message handler
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    # Handle ALL text messages (including from other bots) except commands
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, on_message)
+    )
 
     logger.info("Bot running — polling for updates…")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
