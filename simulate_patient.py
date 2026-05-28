@@ -28,9 +28,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── credentials ──────────────────────────────────────────────────────────────
-API_ID: int = int(os.environ.get("api_app_id") or os.environ["API_ID"])
-API_HASH: str = os.environ.get("api_app_hash") or os.environ["API_HASH"]
-PHONE: str = os.environ.get("PHONE") or os.environ["PHONE"]
+API_ID: int = int(os.environ["API_ID"])
+API_HASH: str = os.environ["API_HASH"]
+PHONE: str = os.environ["PHONE"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
 HF_MODEL: str = os.getenv("HF_MODEL", "HuggingFaceH4/zephyr-7b-beta")
 
