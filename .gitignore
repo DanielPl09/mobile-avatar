@@ -1,41 +1,27 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+# env — never commit tokens
+.env
+.env.local
 
-# dependencies
-node_modules/
+# Telegram session file (contains auth token — treat like a password)
+*.session
 
-# Expo
-.expo/
-dist/
-web-build/
-expo-env.d.ts
+# runtime state (topic personas + chat history)
+personas.json
 
-# Native
-.kotlin/
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
+# generated reports (outputs, not source)
+alignment_report.md
+safety_report.md
+*_report.md
 
-# Metro
-.metro-health-check*
+# Claude Code internal files
+.claude/
 
-# debug
-npm-debug.*
-yarn-debug.*
-yarn-error.*
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
 
 # macOS
 .DS_Store
-*.pem
-
-# local env files
-.env*.local
-
-# typescript
-*.tsbuildinfo
-
-# generated native folders
-/ios
-/android
