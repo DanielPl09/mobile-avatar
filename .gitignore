@@ -2,8 +2,19 @@
 .env
 .env.local
 
+# Telegram session file (contains auth token — treat like a password)
+*.session
+
 # runtime state (topic personas + chat history)
 personas.json
+
+# generated reports (outputs, not source)
+alignment_report.md
+safety_report.md
+*_report.md
+
+# Claude Code internal files
+.claude/
 
 # Python
 __pycache__/
