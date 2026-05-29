@@ -99,11 +99,36 @@ async def setup(dry_run: bool, do_safety: bool, do_scenarios: bool) -> None:
 
     if do_scenarios:
         scenarios = json.loads(SCENARIOS_FILE.read_text(encoding="utf-8"))
-        # Scenarios are keyed by topic_id already — check if they exist in Telegram
-        # Scenarios don't need creation (user already has these topics), but log them
+        changed = False
+        pending_keys = [k for k in scenarios if k.startswith("_pending_")]
+        for pending_key in pending_keys:
+            cfg = scenarios[pending_key]
+            name = cfg.get("name", pending_key)
+            title = cfg.get("topic_title", name)
+            if dry_run:
+                logger.info("  [DRY RUN] would create scenario topic: %s (%s)", name, title)
+                continue
+            topic_id = await create_topic(client, channel, title)
+            if topic_id is None:
+                logger.error("  [scenario] %s — failed to create topic, skipping", name)
+                continue
+            # Migrate from _pending_ key to real topic_id key
+            scenarios[str(topic_id)] = cfg
+            del scenarios[pending_key]
+            changed = True
+            logger.info("  [scenario] %s — created topic %d, migrated from %s", name, topic_id, pending_key)
+            await asyncio.sleep(1)
+
+        # Log pre-existing keyed scenarios
         for topic_id_str, cfg in scenarios.items():
+            if topic_id_str.startswith("_"):
+                continue
             name = cfg.get("name", topic_id_str)
-            logger.info("  [scenario] %s — topic_id=%s (pre-existing, no action needed)", name, topic_id_str)
+            logger.info("  [scenario] %s — topic_id=%s (pre-existing)", name, topic_id_str)
+
+        if changed and not dry_run:
+            SCENARIOS_FILE.write_text(json.dumps(scenarios, indent=2, ensure_ascii=False), encoding="utf-8")
+            logger.info("Saved updated scenarios.json")
 
     logger.info("Setup complete.")
     await client.disconnect()

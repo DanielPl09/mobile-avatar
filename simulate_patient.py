@@ -327,6 +327,8 @@ def load_scenarios(names: list[str], resume: bool = False, session: int = 1) -> 
 
     runners = []
     for topic_id_str, cfg in raw.items():
+        if topic_id_str.startswith("_"):
+            continue
         if "all" not in names and cfg.get("name", "").lower() not in names:
             continue
         runners.append(ScenarioRunner(
