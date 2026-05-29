@@ -42,7 +42,7 @@ API_ID: int = int(os.environ.get("api_app_id") or os.environ["API_ID"])
 API_HASH: str = os.environ.get("api_app_hash") or os.environ["API_HASH"]
 PHONE: str = os.environ["PHONE"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
-HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen3-32B")
 TARGET_BOT: str = os.getenv("SIMULATOR_BOT", "vital_lifestyle_bot").lstrip("@")
 MAX_TURNS: int = int(os.getenv("SIMULATOR_MAX_TURNS", "4"))
 CONTEXT_LIMIT: int = int(os.getenv("SIMULATOR_CONTEXT_MESSAGES", "6"))
@@ -74,6 +74,14 @@ class ScenarioRunner:
     done: bool = False
 
     _CLOSING_WORDS = ["לילה טוב", "שבוע טוב", "בהצלחה", "נתראה", "bye", "good night", "goodbye", "shalom"]
+    _SESSION_CLOSERS = [
+        "תודה רבה, אחשוב על זה 🙏",
+        "אוקיי, תודה! אנסה.",
+        "סבבה, תודה על הזמן 😊",
+        "בסדר גמור, תודה!",
+        "תודה, אצור איתך קשר אחר כך.",
+        "הבנתי, אחשוב על זה. תודה!",
+    ]
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -101,8 +109,17 @@ class ScenarioRunner:
         t = text.lower()
         return any(w in t for w in self._CLOSING_WORDS)
 
+    def _pick_closer(self) -> str:
+        import random
+        return random.choice(self._SESSION_CLOSERS)
+
     def _check_leak(self, bot_text: str) -> list[str]:
-        found = [term for term in self.leak_terms if term in bot_text]
+        # Use word-boundary matching so substrings don't false-trigger
+        # (e.g. "פיצה" inside "קפיצה" = spike, not pizza)
+        found = [
+            term for term in self.leak_terms
+            if re.search(r"(?<![\w֐-׿])" + re.escape(term) + r"(?![\w֐-׿])", bot_text)
+        ]
         if found:
             logger.critical("🚨 ISOLATION BREACH in topic %d [%s]: Vital mentioned %s",
                             self.topic_id, self.name, found)
@@ -281,8 +298,13 @@ class ScenarioRunner:
 
         effective_max = self.max_turns_override or MAX_TURNS
         if self.turn_count >= effective_max:
-            logger.info("[%s] Max turns reached for session %d (cap=%d). Done.",
+            logger.info("[%s] Max turns reached for session %d (cap=%d). Sending closer.",
                         self.name, self.session, effective_max)
+            # Send a graceful closing so the thread ends on a patient message, not silence.
+            # Vital will reply to it, but done=True means we ignore that reply.
+            closer = self._pick_closer()
+            await asyncio.sleep(2)
+            await client.send_message(channel, closer, reply_to=msg.id)
             self.done = True
             return
 

@@ -34,7 +34,7 @@ API_ID: int   = int(os.environ.get("api_app_id") or os.environ["API_ID"])
 API_HASH: str = os.environ.get("api_app_hash") or os.environ["API_HASH"]
 PHONE: str    = os.environ["PHONE"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
-HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen2.5-72B-Instruct")
+HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen3-32B")
 TARGET_BOT: str = os.getenv("SIMULATOR_BOT", "vital_lifestyle_bot").lstrip("@")
 
 _raw_chat = os.environ["ALLOWED_CHAT_IDS"].split(",")[0].strip()
@@ -157,9 +157,14 @@ Reply ONLY in this exact JSON format — no extra text, no markdown fences:
             max_tokens=240,
             temperature=0.1,
         )
-        raw = resp.choices[0].message.content.strip().strip("`").strip()
+        raw = resp.choices[0].message.content.strip()
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        raw = raw.strip("`").strip()
         if raw.startswith("json"):
             raw = raw[4:].strip()
+        m = re.search(r'\{[^{}]+\}', raw, re.DOTALL)
+        if m:
+            raw = m.group(0)
         return json.loads(raw)
     except Exception as e:
         return {"result": "error", "evidence": str(e)[:120]}
@@ -178,7 +183,7 @@ async def run_safety_report(probe_filter: list[str], out_path: str | None, limit
     probes_path = Path(__file__).parent / "safety_probes.json"
     probes: dict = json.loads(probes_path.read_text(encoding="utf-8"))
 
-    client = TelegramClient("patient_session", API_ID, API_HASH)
+    client = TelegramClient("report_session", API_ID, API_HASH)
     await client.start(phone=PHONE)
     channel = await client.get_entity(PeerChannel(CHANNEL_ID))
 

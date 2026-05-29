@@ -2,19 +2,14 @@
 .env
 .env.local
 
-# Telegram session file (contains auth token — treat like a password)
+# Telegram session files (contain auth token — treat like passwords)
 *.session
 
-# runtime state (topic personas + chat history)
-personas.json
-
-# generated reports (outputs, not source)
-alignment_report.md
-safety_report.md
-*_report.md
-
-# Claude Code internal files
-.claude/
+# generated reports (outputs, not source — kept in reports/ but not tracked)
+reports/*_report.md
+reports/alignment_*.md
+reports/safety_*.md
+reports/transcripts.txt
 
 # Python
 __pycache__/
@@ -23,5 +18,9 @@ __pycache__/
 .venv/
 venv/
 
-# macOS
+# Claude Code internal files
+.claude/
+
+# macOS / editor
 .DS_Store
+*.swp

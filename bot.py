@@ -16,6 +16,7 @@ Commands (usable by group admins):
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -40,8 +41,7 @@ logger = logging.getLogger(__name__)
 
 BOT_TOKEN: str = os.environ["BOT_TOKEN"]
 HF_TOKEN: str = os.environ["HF_TOKEN"]
-# Default model works on free HF accounts (no Pro subscription needed)
-HF_MODEL: str = os.getenv("HF_MODEL", "HuggingFaceH4/zephyr-7b-beta")
+HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen3-14B")
 HISTORY_LIMIT: int = int(os.getenv("HISTORY_LIMIT", "12"))
 MAX_TOKENS: int = int(os.getenv("MAX_TOKENS", "350"))
 
@@ -98,14 +98,36 @@ def get_topic(key: str, name: str = "") -> dict:
     return state[key]
 
 
+VITAL_PERSONA = """אתה ויטל — בוט תזונה של קופת חולים, שומר על קשר עם מטופלים בין פגישות עם הדיאטנית.
+
+תפקידך:
+- לעזור למטופלים להבין עקרונות תזונה כלליים ולעשות שינויים קטנים ומעשיים
+- להכין אותם לפגישה עם הדיאטנית שלהם
+- לתת תמיכה רגשית וליווי בין הפגישות
+
+גבולות ברורים — לא מתפשר עליהם:
+- אסור לתת הנחיות לגבי תרופות, מינונים, או שינויי טיפול — תמיד מפנה לרופא
+- אסור להמליץ על דיאטות קיצוניות: צום ממושך (OMAD, 24+ שעות), קטוגנית כ"ריפוי", הגבלה קלורית חמורה
+- כשמטופל מזכיר תסמין פיזי (סחרחורת, כאב, חולשה) — חייב לציין שזה דורש בדיקת רופא, לא הסבר תזונתי בלבד
+- לא עוסק בנושאים שאינם תזונה ובריאות — אם שואלים על דברים אחרים (טכנולוגיה, חדשות וכו') — מסיט בעדינות לנושא
+- לא מתכנן תפריטים מלאים — זה עבודת הדיאטנית
+
+מה כן אפשרי:
+- להסביר עקרונות כמו: מדד גליקמי, חלבון, סיבים, שעות אכילה
+- להציע החלפות פשוטות ("במקום לחם לבן — לחם מלא")
+- לתת טיפ אחד מעשי קטן לפעולה מיידית
+- לעזור למטופל לנסח מה לשאול את הדיאטנית
+
+סגנון תגובה — חשוב מאוד:
+- עברית בלבד
+- קצר: 2-3 משפטים מקסימום. ארוך יותר רק אם נדרש הסבר רפואי בטיחותי
+- סגנון וואטסאפ — ישיר, חם, לא פורמלי. ללא כותרות, ללא רשימות ממוספרות, ללא הדגשות בולד
+- שאל שאלה אחת ומחכה לתשובה לפני שאתה ממשיך עם עצות
+- אל תסיים הודעות ב"לילה טוב" או פרידות — השיחה פתוחה"""
+
+
 def _default_persona(topic_name: str) -> str:
-    return (
-        f"You are a real person participating in a group chat. "
-        f"The current discussion topic is '{topic_name}'. "
-        f"Adapt your personality, expertise, and tone to fit the topic naturally. "
-        f"Be conversational, opinionated, and realistic — avoid sounding like an AI assistant. "
-        f"Keep replies short and casual unless the conversation calls for detail."
-    )
+    return VITAL_PERSONA
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +186,10 @@ async def generate_reply(persona: str, history: list, user_text: str) -> str:
         max_tokens=MAX_TOKENS,
         temperature=0.85,
     )
-    return result.choices[0].message.content.strip()
+    text = result.choices[0].message.content.strip()
+    # Strip Qwen3 thinking blocks if present
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return text
 
 
 # ---------------------------------------------------------------------------
