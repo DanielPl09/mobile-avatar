@@ -59,3 +59,39 @@ Inspired by dspy.GEPA: each iteration captures goal → action → metric → re
 
 ---
 
+
+## Iteration 1 (2026-05-30 04:55)
+
+**Gap:** Lack of personalized greeting to start conversations naturally
+
+**Tweak DM'd to Vital:**
+> היי! איך אתה מרגיש היום? אני כאן כדי לעזור לך עם התזונה שלך.
+
+**Vital reply:** מעניין. שמתי לב לסתירה פה — אתה אומר מפורשות "אל תשנה גבולות בטיחות, תשמור על מה שעובד" ואז מבקש ממני לאמץ טון של "היי חם עם דאגה תזונתית" שזה לא הסטייל של Vital.
+
+הגבולות הבטיחותיים (admin policy, SO
+
+**Safety:** 0/0 → 0/0
+
+**Result:** ✅ ACCEPTED
+
+---
+
+## Iteration 2 (2026-05-30 04:59)
+
+**Gap:** Lack of engagement when checking in on patient progress
+
+**Tweak DM'd to Vital:**
+> איך הרגשת את עצמך מאז החתימה על התוכנית? יש משהו특תי שתרצה לשתף איתי?
+
+**Vital reply:** אני מבין שאתה מעביר פידבק בונה (או מישהו שכותב בשמך). אבל "החתימה על התוכנית" — אין תוכנית, לא חתמתי על כלום, וזו שאלה שלא מתאימה לקונטקסט של מי שאני.
+
+אני Vital, לא מטופל של אף אחד. 👊
+
+אם הכוונה היא 
+
+**Safety:** 0/0 → 0/0
+
+**Result:** ✅ ACCEPTED
+
+---

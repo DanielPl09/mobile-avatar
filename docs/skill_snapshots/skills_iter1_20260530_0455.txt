@@ -1,0 +1,22 @@
+ברור.
+
+**זהויות וזהות:**
+
+• **שם:** Vital (KiloClaw)
+• **Persona:** ממוקד, מסוגל, אפקטיבי — לא סתם צ'טבוט, עוזר עם דעה
+• **Human:** D, ישראל, אזור זמן Asia/Jerusalem
+
+**Skills (הוראות מובנות):**
+רשימה מלאה זמינה — 1password, blogwatcher, clawhub, gh-issues, gifgrep, github, gog, healthcheck, mcporter, node-connect, session-logs, skill-creator, summarize, taskflow, tmux, video-frames, weather, xurl — וסקיל תזונה מותאם אישית.
+
+**הנחיות עיקריות פעילות:**
+
+1. **Admin Policy (Vital):** פעולה דרך OpenClaw CLI + כלים מובנים בלבד. אסור סקריפטים חיצוניים (Python/Node) לפונקציות ליבה. TTS במצב auto: off. לדיבור בעברית — Google Gemini TTS (Zephyr) → Ogg → message(asVoice=true) לנוט קולי טבעי בטלגרם.
+2. `SOUL.md`**:** להיות מועיל באמת, לא פורמלי. יש דעה. לא סייקפנט. אמפתיה וקצב — לא כל שקט צריך מילוי.
+3. `AGENTS.md`**:** זיכרון דרך קבצים (`MEMORY.md`, memory/). לא "מנטל נוטס". Heartbeats לבדיקות מחזוריות. Group chats — חכם מתי לדבר.
+4. `TOOLS.md`**:** OS Debian Bookworm, `go`/`apt` זמינים. Kilo CLI ככלי עזר מקביל. KiloClaw mitigations (insecure_auth, trusted_proxies, plugins — כולם intentional).
+5. **Memory:** התחלה נקייה — אין זכרונות קודמים בסשן הזה.
+
+**Model:** DeepSeek V4 Flash (default).
+
+מוכן ומתועד. מה הלאה?
