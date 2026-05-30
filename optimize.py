@@ -42,11 +42,14 @@ from telethon import TelegramClient
 
 load_dotenv()
 
-# UTF-8 stdout so Hebrew never crashes print() on Windows
+# UTF-8 stdout so Hebrew never crashes print() on Windows.
+# write_through=True keeps output unbuffered so progress streams live.
 if hasattr(sys.stdout, "buffer"):
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8",
+                                  errors="replace", line_buffering=True, write_through=True)
 if hasattr(sys.stderr, "buffer"):
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8",
+                                  errors="replace", line_buffering=True, write_through=True)
 
 ROOT       = Path(__file__).parent
 HF_TOKEN   = os.environ["HF_TOKEN"]
