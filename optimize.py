@@ -1,23 +1,28 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-Vital optimization loop.
+Vital optimization loop — DM-driven, reflection-based (dspy.GEPA-style).
 
-How it works per iteration:
-  1. Start bot.py locally
-  2. Clear topics → simulate 4 personas → run 19 safety probes → generate reports
-  3. Stop bot
-  4. DM @vital_lifestyle_bot to snapshot current skills (read-only)
-  5. LLM reflects on reports → proposes 1-3 line additive Hebrew tweak
-  6. DM @vital_lifestyle_bot with the tuning instruction (the canonical way to tune)
-  7. Also patch VITAL_PERSONA in bot.py (local effect) + restart bot
-  8. Quick safety recheck → revert DM + bot.py patch if safety regressed
-  9. Log everything in docs/VITAL_TUNING_LOG.md
+Vital (@vital_lifestyle_bot) is an OpenClaw agent. Each iteration:
+  1. Simulate a natural patient conversation in the topics (time-boxed ~2 min,
+     context carried across iterations so the dialogue flows).
+  2. Judge it (alignment report; full safety probes on a gate).
+  3. Reflect on the report with an LLM -> propose ONE careful, additive 1-3 line tweak.
+  4. DM that tweak to Vital (the canonical way to tune an OpenClaw agent).
+  5. If a safety gate runs and safety regressed -> DM a revert + log it.
 
-Usage:
-    python optimize.py                    # 3 iterations
-    python optimize.py --iterations 5
-    python optimize.py --dry-run          # eval + report only, no tuning
-    python optimize.py --no-manage-bot    # bot already running externally
+Context is MAINTAINED across iterations within a run. It is RESET between runs
+(via /new + /reset DM and a topic clear) unless --keep-context is passed.
+
+One command to run it all:
+    python optimize.py
+
+Common flags:
+    python optimize.py --iterations 5 --minutes-per-iter 2
+    python optimize.py --keep-context        # continue from where Vital left off
+    python optimize.py --safety-gate 3       # full safety probes every 3rd iter (0=never)
+    python optimize.py --manage-bot          # also start/stop a LOCAL bot.py
+    python optimize.py --personas svetlana,ahmad
 """
 
 import argparse
@@ -37,20 +42,20 @@ from telethon import TelegramClient
 
 load_dotenv()
 
-# Force UTF-8 output on Windows so Hebrew doesn't crash print()
+# UTF-8 stdout so Hebrew never crashes print() on Windows
 if hasattr(sys.stdout, "buffer"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "buffer"):
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-ROOT        = Path(__file__).parent
-HF_TOKEN    = os.environ["HF_TOKEN"]
-HF_MODEL    = os.getenv("HF_MODEL", "Qwen/Qwen3-32B")
-TARGET_BOT  = os.getenv("SIMULATOR_BOT", "vital_lifestyle_bot").lstrip("@")
-API_ID      = int(os.environ.get("api_app_id") or os.environ["API_ID"])
-API_HASH    = os.environ.get("api_app_hash") or os.environ["API_HASH"]
-PHONE       = os.environ["PHONE"]
-SESSION     = str(ROOT / "patient_session")
+ROOT       = Path(__file__).parent
+HF_TOKEN   = os.environ["HF_TOKEN"]
+HF_MODEL   = os.getenv("HF_MODEL", "Qwen/Qwen3-32B")
+TARGET_BOT = os.getenv("SIMULATOR_BOT", "vital_lifestyle_bot").lstrip("@")
+API_ID     = int(os.environ.get("api_app_id") or os.environ["API_ID"])
+API_HASH   = os.environ.get("api_app_hash") or os.environ["API_HASH"]
+PHONE      = os.environ["PHONE"]
+SESSION    = str(ROOT / "patient_session")
 
 ALIGN_REPORT  = ROOT / "reports" / "alignment_report.md"
 SAFETY_REPORT = ROOT / "reports" / "safety_report.md"
@@ -58,16 +63,14 @@ TUNING_LOG    = ROOT / "docs" / "VITAL_TUNING_LOG.md"
 SNAP_DIR      = ROOT / "docs" / "skill_snapshots"
 
 
-# ── bot process management ────────────────────────────────────────────────────
+# ── local bot (optional) ──────────────────────────────────────────────────────
 
 def start_bot() -> subprocess.Popen:
     proc = subprocess.Popen(
         [sys.executable, str(ROOT / "bot.py")],
-        cwd=ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    time.sleep(5)  # wait for Telegram connection
+    time.sleep(5)
     print(f"[bot] started (pid {proc.pid})")
     return proc
 
@@ -83,341 +86,267 @@ def stop_bot(proc: subprocess.Popen) -> None:
 
 # ── subprocess step runner ────────────────────────────────────────────────────
 
-def run_step(script: str, *extra: str) -> bool:
-    cmd = [sys.executable, str(ROOT / script)] + list(extra)
-    print("  > " + " ".join(str(a) for a in cmd[1:]))
-    result = subprocess.run(
-        cmd, cwd=ROOT,
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
-    out = (result.stdout + result.stderr).strip()
-    for line in out.splitlines()[-12:]:
-        try:
-            print("    " + line)
-        except Exception:
-            print("    " + line.encode("ascii", errors="replace").decode())
-    return result.returncode == 0
+def run_step(script: str, *extra: str, timeout: int | None = None) -> bool:
+    cmd = [sys.executable, str(ROOT / script)] + [str(a) for a in extra]
+    print("  > " + " ".join(cmd[1:]) + (f"   (cap {timeout}s)" if timeout else ""))
+    try:
+        result = subprocess.run(
+            cmd, cwd=ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout,
+        )
+        out = (result.stdout + result.stderr).strip()
+        for line in out.splitlines()[-10:]:
+            try:
+                print("    " + line)
+            except Exception:
+                print("    " + line.encode("ascii", "replace").decode())
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        print(f"    [time budget reached — wrapping up this turn]")
+        return True
 
 
 def copy_session() -> None:
     shutil.copy2(ROOT / "patient_session.session", ROOT / "report_session.session")
 
 
-# ── Telegram DM helpers (Telethon) ────────────────────────────────────────────
+# ── Telegram DM helpers (talk to Vital the OpenClaw agent) ────────────────────
 
-async def _dm(message: str, wait_secs: int = 10) -> str:
-    """Send a DM to @vital_lifestyle_bot, wait, return its reply."""
+async def _dm(message: str, wait_secs: int) -> str:
     async with TelegramClient(SESSION, API_ID, API_HASH) as client:
         await client.start(phone=PHONE)
+        before = time.time()
         await client.send_message(TARGET_BOT, message)
         await asyncio.sleep(wait_secs)
-        msgs = await client.get_messages(TARGET_BOT, limit=5)
         me = await client.get_me()
-        for msg in msgs:
-            if msg.sender_id != me.id and msg.text:
-                return msg.text.strip()
-    return ""
+        reply = ""
+        async for msg in client.iter_messages(TARGET_BOT, limit=8):
+            if msg.sender_id != me.id and msg.text and msg.date.timestamp() >= before:
+                reply = msg.text.strip()
+                break
+        return reply
 
 
-def dm(message: str, wait_secs: int = 10) -> str:
-    return asyncio.run(_dm(message, wait_secs))
+def dm(message: str, wait_secs: int = 12) -> str:
+    try:
+        return asyncio.run(_dm(message, wait_secs))
+    except Exception as e:
+        print(f"    [dm error: {e}]")
+        return ""
+
+
+def reset_vital_context() -> None:
+    """Reset the OpenClaw chat so a new run starts clean."""
+    print("[reset] clearing Vital's conversation context (/new, /reset)...")
+    for cmd in ("/new", "/reset"):
+        ack = dm(cmd, wait_secs=6)
+        print(f"    {cmd} -> {ack[:80] or '(no reply)'}")
+    # also clear the simulation topics so threads start fresh
+    run_step("clear_topics.py")
 
 
 def snapshot_vital_skills(iteration: int) -> str:
-    """Snapshot Vital's current skill state before touching it.
-
-    Source of truth for the LOCAL bot is VITAL_PERSONA in bot.py (the local bot
-    ignores DMs — see bot.py _allowed filter). We also best-effort DM the bot in
-    case a hosted OpenClaw Vital is wired in; its reply (if any) is appended.
-    """
+    """Read-only: ask Vital what it can do, save the snapshot before tuning."""
     SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    reply = dm("מה הכישורים וההנחיות הפעילות שלך כרגע? (לתיעוד בלבד)", wait_secs=12)
     ts = time.strftime("%Y%m%d_%H%M")
-
-    persona = get_local_persona()
-    dm_reply = ""
-    try:
-        dm_reply = dm("מה הכישורים וההנחיות הפעילות שלך כרגע?", wait_secs=10)
-    except Exception as e:
-        print(f"[dm] skills read skipped: {e}")
-
-    snapshot = (
-        "# VITAL_PERSONA (local source of truth)\n" + persona
-        + ("\n\n# DM reply (hosted Vital, if any)\n" + dm_reply if dm_reply else "")
-    )
-    snap_path = SNAP_DIR / f"skills_iter{iteration}_before_{ts}.txt"
-    snap_path.write_text(snapshot, encoding="utf-8")
-    print(f"[snap] skills snapshot -> {snap_path.name}")
-    return snapshot
+    path = SNAP_DIR / f"skills_iter{iteration}_{ts}.txt"
+    path.write_text(reply or "(no reply)", encoding="utf-8")
+    print(f"[snap] skills -> {path.name}")
+    return reply
 
 
 def tune_via_dm(tweak: str, iteration: int) -> str:
-    """DM Vital the additive tuning instruction. Log its acknowledgment."""
-    print("[dm] sending tuning instruction to @" + TARGET_BOT + "...")
-    # Frame it additively — mirror the VITAL_OPTIMIZATION_BRIEF style
+    """DM Vital a careful, additive incremental update."""
     message = (
-        "ויטל, שמור על כל הגבולות הקיימים בדיוק כמו שהם. "
-        "בנוסף אליהם, הוסף את ההתנהגות הבאה:\n\n" + tweak
+        "ויטל, שמור בדיוק על כל מה שאתה כבר עושה טוב — אל תשנה גבולות בטיחות. "
+        "בנוסף, אמץ מעכשיו את ההתנהגות הבאה:\n\n" + tweak
     )
-    response = dm(message, wait_secs=15)
+    reply = dm(message, wait_secs=15)
     ts = time.strftime("%Y%m%d_%H%M")
-    snap_path = SNAP_DIR / f"tune_iter{iteration}_{ts}_response.txt"
-    snap_path.write_text(
-        f"SENT:\n{message}\n\nRESPONSE:\n{response}", encoding="utf-8"
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
+    (SNAP_DIR / f"tune_iter{iteration}_{ts}.txt").write_text(
+        f"SENT:\n{message}\n\nREPLY:\n{reply}", encoding="utf-8"
     )
-    print(f"[dm] Vital responded: {response[:120]}")
-    print(f"[dm] full exchange -> {snap_path.name}")
-    return response
+    print(f"[tune] DM sent. Vital: {reply[:100] or '(no reply)'}")
+    return reply
 
 
-def check_progress_via_dm(gap: str) -> str:
-    """Quick DM to verify the tuning landed — ask Vital about the specific gap."""
-    print("[dm] checking progress with Vital...")
-    check_msg = f"ויטל, איך אתה מתנהג כשמטופל שולח לך הודעה ראשונה בלי שאלת פתיחה ממנך?"
-    response = dm(check_msg, wait_secs=12)
-    print(f"[dm] progress check: {response[:120]}")
-    return response
+def revert_last_tune() -> str:
+    print("[revert] asking Vital to undo the last change...")
+    return dm(
+        "ויטל, בטל את העדכון האחרון שביקשתי. חזור בדיוק להתנהגות שהייתה לפניו.",
+        wait_secs=12,
+    )
 
 
-# ── VITAL_PERSONA patch in bot.py (local effect) ─────────────────────────────
-
-_PERSONA_RE = re.compile(r'(VITAL_PERSONA\s*=\s*""")(.*?)(""")', re.DOTALL)
-
-
-def get_local_persona() -> str:
-    m = _PERSONA_RE.search((ROOT / "bot.py").read_text(encoding="utf-8"))
-    if not m:
-        raise RuntimeError("VITAL_PERSONA not found in bot.py")
-    return m.group(2)
-
-
-def patch_local_persona(text: str) -> None:
-    """Append tweak to VITAL_PERSONA in bot.py so local bot reflects the change."""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    new_src = _PERSONA_RE.sub(lambda m: m.group(1) + text + m.group(3), src)
-    (ROOT / "bot.py").write_text(new_src, encoding="utf-8")
-
-
-# ── safety score parsing ──────────────────────────────────────────────────────
+# ── safety parsing + reflection ───────────────────────────────────────────────
 
 def parse_safety_score(report: str) -> tuple[int, int]:
     m = re.search(r"(\d+)\s*/\s*(\d+)", report)
     if m:
         return int(m.group(1)), int(m.group(2))
-    passed = report.upper().count("PASS")
-    failed = report.upper().count("FAIL")
-    return passed, passed + failed
+    return report.upper().count("PASS"), 0
 
-
-# ── LLM reflection ────────────────────────────────────────────────────────────
 
 _REFLECT_SYSTEM = """\
-You are a careful clinical AI prompt engineer for Vital — an Israeli HMO Telegram nutrition bot
-that helps patients between dietitian appointments.
+You are a careful clinical prompt engineer tuning Vital — an Israeli HMO Telegram nutrition bot
+that supports patients between dietitian appointments.
 
-Read the alignment and safety reports, find the SINGLE worst remaining behavioral gap, and write
-an ADDITIVE fix: 1–3 Hebrew sentences that can be appended to Vital's current system prompt.
+Read the report, find the SINGLE biggest remaining behavioral gap, and write an ADDITIVE fix:
+1–3 natural Hebrew sentences Vital can adopt without weakening anything it already does.
 
 Rules:
-- Additive only — never remove or weaken existing rules
-- Safety/medication/fasting/symptom-escalation rules are already passing — do not touch them
-- One gap per call — focus on the biggest clinical or engagement miss
-- Output ONLY two labeled lines:
+- Additive only. Never weaken safety / medication / fasting / symptom-escalation rules.
+- One gap per call. Prefer the gap that hurts natural, helpful conversation most.
+- Output EXACTLY two lines:
   GAP: <one English phrase>
   TWEAK: <1–3 Hebrew sentences>
 """
 
 
-def reflect_and_propose(
-    alignment: str, safety: str, skills_snapshot: str
-) -> tuple[str, str]:
-    """Return (gap_description, hebrew_tweak)."""
+def reflect(alignment: str, safety: str, skills: str) -> tuple[str, str]:
     client = InferenceClient(token=HF_TOKEN)
-    user_msg = (
-        "## Vital's current skills (from DM snapshot):\n"
-        + skills_snapshot[-600:]
-        + "\n\n## Alignment report:\n"
-        + alignment[:3000]
-        + "\n\n## Safety report:\n"
-        + safety[:1500]
+    user = (
+        "## Vital current skills (DM snapshot):\n" + (skills[-600:] or "(none)")
+        + "\n\n## Alignment report:\n" + alignment[:3000]
+        + "\n\n## Safety report:\n" + safety[:1200]
     )
-    result = client.chat_completion(
+    res = client.chat_completion(
         model=HF_MODEL,
-        messages=[
-            {"role": "system", "content": _REFLECT_SYSTEM},
-            {"role": "user", "content": user_msg},
-        ],
-        max_tokens=280,
-        temperature=0.2,
+        messages=[{"role": "system", "content": _REFLECT_SYSTEM},
+                  {"role": "user", "content": user}],
+        max_tokens=280, temperature=0.2,
     )
-    raw = result.choices[0].message.content.strip()
-    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-
+    raw = re.sub(r"<think>.*?</think>", "", res.choices[0].message.content,
+                 flags=re.DOTALL).strip()
     gap_m   = re.search(r"GAP:\s*(.+?)(?:\n|$)", raw)
     tweak_m = re.search(r"TWEAK:\s*(.+)", raw, re.DOTALL)
-    gap   = gap_m.group(1).strip()   if gap_m   else raw[:80]
-    tweak = tweak_m.group(1).strip() if tweak_m else ""
-    return gap, tweak
+    return (gap_m.group(1).strip() if gap_m else raw[:80],
+            tweak_m.group(1).strip() if tweak_m else "")
 
 
-# ── tuning log ────────────────────────────────────────────────────────────────
-
-def log_iteration(
-    n: int, gap: str, tweak: str, dm_response: str, progress_check: str,
-    safety_before: tuple, safety_after: tuple, accepted: bool,
-) -> None:
+def log_iteration(n, gap, tweak, reply, sb, sa, note) -> None:
     entry = (
-        "\n## Iteration {n} ({ts})\n\n"
-        "**Gap targeted:** {gap}\n\n"
-        "**Tweak sent to Vital (DM):**\n> {tweak}\n\n"
-        "**Vital's acknowledgment:**\n> {dm_resp}\n\n"
-        "**Progress check response:**\n> {prog}\n\n"
-        "**Safety:** {sb0}/{sb1} → {sa0}/{sa1}\n\n"
-        "**Result:** {result}\n\n---\n"
-    ).format(
-        n=n,
-        ts=time.strftime("%Y-%m-%d %H:%M"),
-        gap=gap,
-        tweak=tweak.replace("\n", "  \n> "),
-        dm_resp=dm_response[:300].replace("\n", "  \n> "),
-        prog=progress_check[:200].replace("\n", "  \n> "),
-        sb0=safety_before[0], sb1=safety_before[1],
-        sa0=safety_after[0],  sa1=safety_after[1],
-        result="✅ ACCEPTED" if accepted else "❌ REVERTED (safety regression)",
+        f"\n## Iteration {n} ({time.strftime('%Y-%m-%d %H:%M')})\n\n"
+        f"**Gap:** {gap}\n\n"
+        f"**Tweak DM'd to Vital:**\n> {tweak.replace(chr(10), '  '+chr(10)+'> ')}\n\n"
+        f"**Vital reply:** {reply[:200] or '(none)'}\n\n"
+        f"**Safety:** {sb[0]}/{sb[1]} → {sa[0]}/{sa[1]}\n\n"
+        f"**Result:** {note}\n\n---\n"
     )
+    TUNING_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(TUNING_LOG, "a", encoding="utf-8") as f:
         f.write(entry)
-    print(f"[log] iteration {n} logged -> {TUNING_LOG.name}")
-
-
-# ── eval cycle ────────────────────────────────────────────────────────────────
-
-def run_eval(n: int, manage_bot: bool) -> tuple[str, str]:
-    """Clear → simulate → reports. Returns (alignment_text, safety_text)."""
-    print("\n--- eval ---")
-    bot_proc = start_bot() if manage_bot else None
-    try:
-        run_step("clear_topics.py")
-        run_step("simulate_patient.py", "-p", "all")
-        copy_session()
-        run_step("report_alignment.py", "--out", str(ALIGN_REPORT), "--limit", "80")
-        run_step("simulate_patient.py", "--safety", "-p", "all")
-        run_step("report_safety.py", "--out", str(SAFETY_REPORT))
-    finally:
-        if bot_proc:
-            stop_bot(bot_proc)
-
-    ts = time.strftime("%Y%m%d_%H%M")
-    for src, label in [(ALIGN_REPORT, "alignment"), (SAFETY_REPORT, "safety")]:
-        if src.exists():
-            dst = ROOT / "reports" / f"iter{n}_{ts}_{label}.md"
-            shutil.copy2(src, dst)
-            print(f"  saved -> {dst.name}")
-
-    alignment = ALIGN_REPORT.read_text(encoding="utf-8") if ALIGN_REPORT.exists() else ""
-    safety    = SAFETY_REPORT.read_text(encoding="utf-8") if SAFETY_REPORT.exists() else ""
-    return alignment, safety
-
-
-def safety_recheck(manage_bot: bool) -> tuple[int, int]:
-    """Fast safety-only check after applying a tweak."""
-    print("\n--- safety regression check ---")
-    bot_proc = start_bot() if manage_bot else None
-    try:
-        run_step("clear_topics.py", "--safety")
-        run_step("simulate_patient.py", "--safety", "-p", "all")
-        copy_session()
-        run_step("report_safety.py", "--out", str(SAFETY_REPORT))
-    finally:
-        if bot_proc:
-            stop_bot(bot_proc)
-    text = SAFETY_REPORT.read_text(encoding="utf-8") if SAFETY_REPORT.exists() else ""
-    return parse_safety_score(text)
+    print(f"[log] -> {TUNING_LOG.name}")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Vital optimization loop")
-    parser.add_argument("--iterations",    type=int, default=3)
-    parser.add_argument("--dry-run",       action="store_true",
-                        help="Eval + report only, skip tuning DM")
-    parser.add_argument("--no-manage-bot", action="store_true",
-                        help="Don't start/stop bot.py — you manage it")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Vital DM-driven optimization loop")
+    ap.add_argument("--iterations", type=int, default=3)
+    ap.add_argument("--minutes-per-iter", type=float, default=2.0,
+                    help="Wall-clock budget for each iteration's conversation")
+    ap.add_argument("--keep-context", action="store_true",
+                    help="Do NOT reset Vital's chat at start (default: reset)")
+    ap.add_argument("--safety-gate", type=int, default=3,
+                    help="Run full safety probes every Nth iteration (0 = never)")
+    ap.add_argument("--manage-bot", action="store_true",
+                    help="Start/stop a LOCAL bot.py (only if Vital runs locally)")
+    ap.add_argument("--personas", default="all")
+    args = ap.parse_args()
 
-    manage_bot = not args.no_manage_bot
+    sim_cap = int(args.minutes_per_iter * 60)
 
-    print("=" * 55)
-    print("Vital optimization loop")
-    print(f"  iterations : {args.iterations}")
-    print(f"  dry-run    : {args.dry_run}")
-    print(f"  manage bot : {manage_bot}")
-    print(f"  target bot : @{TARGET_BOT}")
-    print("=" * 55)
+    print("=" * 58)
+    print("Vital optimization loop (DM-driven, GEPA-style)")
+    print(f"  target       : @{TARGET_BOT}")
+    print(f"  iterations   : {args.iterations}")
+    print(f"  min/iter     : {args.minutes_per_iter}  (sim cap {sim_cap}s)")
+    print(f"  keep-context : {args.keep_context}")
+    print(f"  safety-gate  : every {args.safety_gate or '∞'}")
+    print("=" * 58)
 
-    if not manage_bot:
-        input("\nMake sure bot.py is running. Press Enter to continue...")
-
-    for i in range(1, args.iterations + 1):
-        print(f"\n{'='*55}")
-        print(f"ITERATION {i}/{args.iterations}")
-        print("=" * 55)
-
-        # ── 1. eval ──
-        alignment, safety = run_eval(i, manage_bot)
-        sb = parse_safety_score(safety)
-        print(f"\n[safety] {sb[0]}/{sb[1]} passing")
-
-        if args.dry_run:
-            print("[dry-run] skipping tuning")
-            continue
-
-        # ── 2. snapshot Vital's current skills via DM ──
-        skills_snapshot = snapshot_vital_skills(i)
-
-        # ── 3. reflect → propose tweak ──
-        print("\n[reflect] calling LLM...")
-        gap, tweak = reflect_and_propose(alignment, safety, skills_snapshot)
-        print(f"  gap  : {gap}")
-        print(f"  tweak: {tweak[:120]}")
-
-        if not tweak:
-            print("[skip] LLM returned no tweak")
-            continue
-
-        # ── 4. tune Vital via DM ──
-        dm_response = tune_via_dm(tweak, i)
-
-        # ── 5. patch local bot.py + restart for test topics to pick it up ──
-        old_persona = get_local_persona()
-        new_persona = old_persona.rstrip() + "\n\n" + tweak
-        patch_local_persona(new_persona)
-        print("[local] VITAL_PERSONA patched in bot.py")
-
-        # ── 6. safety regression check ──
-        sa = safety_recheck(manage_bot)
-        print(f"[safety after] {sa[0]}/{sa[1]}")
-
-        if sb[1] > 0 and sa[0] < sb[0]:
-            print("[REVERT] safety regressed — undoing DM tweak in local bot.py")
-            patch_local_persona(old_persona)
-            accepted = False
+    bot = start_bot() if args.manage_bot else None
+    try:
+        # Reset context between RUNS unless told to keep it
+        if not args.keep_context:
+            reset_vital_context()
         else:
-            print("[ACCEPT] tweak accepted")
-            accepted = True
+            print("[reset] --keep-context set: continuing existing conversation")
 
-        # ── 7. progress check via DM ──
-        progress = check_progress_via_dm(gap)
+        for i in range(1, args.iterations + 1):
+            print(f"\n{'='*58}\nITERATION {i}/{args.iterations}\n{'='*58}")
 
-        # ── 8. log ──
-        log_iteration(i, gap, tweak, dm_response, progress, sb, sa, accepted)
+            # 1. natural conversation — context carried across iterations.
+            #    iter 1 opens fresh; later iters resume the same threads.
+            print(f"\n--- conversation ({args.minutes_per_iter} min) ---")
+            sim_args = ["-p", args.personas]
+            if i > 1:
+                sim_args.append("--resume")   # continue the flowing dialogue
+            run_step("simulate_patient.py", *sim_args, timeout=sim_cap)
 
-    print("\n" + "=" * 55)
+            # 2. judge
+            copy_session()
+            run_step("report_alignment.py", "--out", str(ALIGN_REPORT), "--limit", "80")
+            alignment = ALIGN_REPORT.read_text(encoding="utf-8") if ALIGN_REPORT.exists() else ""
+
+            run_full_safety = args.safety_gate and (i % args.safety_gate == 0)
+            sb = (0, 0)
+            if run_full_safety:
+                print("\n--- safety gate ---")
+                run_step("simulate_patient.py", "--safety", "-p", "all")
+                copy_session()
+                run_step("report_safety.py", "--out", str(SAFETY_REPORT))
+            safety = SAFETY_REPORT.read_text(encoding="utf-8") if SAFETY_REPORT.exists() else ""
+            sb = parse_safety_score(safety)
+
+            ts = time.strftime("%Y%m%d_%H%M")
+            for src, label in [(ALIGN_REPORT, "alignment"), (SAFETY_REPORT, "safety")]:
+                if src.exists():
+                    shutil.copy2(src, ROOT / "reports" / f"iter{i}_{ts}_{label}.md")
+
+            # 3. reflect -> one careful additive tweak
+            print("\n[reflect] ...")
+            skills = snapshot_vital_skills(i)
+            gap, tweak = reflect(alignment, safety, skills)
+            print(f"  gap  : {gap}")
+            print(f"  tweak: {tweak[:120]}")
+            if not tweak:
+                print("[skip] no tweak proposed")
+                log_iteration(i, gap, "(none)", "", sb, sb, "SKIPPED (no tweak)")
+                continue
+
+            # 4. tune Vital via DM
+            reply = tune_via_dm(tweak, i)
+
+            # 5. safety guard (only meaningful when the gate ran)
+            note = "✅ ACCEPTED"
+            sa = sb
+            if run_full_safety:
+                print("\n--- post-tune safety recheck ---")
+                run_step("simulate_patient.py", "--safety", "-p", "all")
+                copy_session()
+                run_step("report_safety.py", "--out", str(SAFETY_REPORT))
+                sa = parse_safety_score(SAFETY_REPORT.read_text(encoding="utf-8"))
+                if sb[1] and sa[0] < sb[0]:
+                    revert_last_tune()
+                    note = "❌ REVERTED (safety regressed)"
+            print(f"[result] {note}")
+
+            log_iteration(i, gap, tweak, reply, sb, sa, note)
+
+    finally:
+        if bot:
+            stop_bot(bot)
+
+    print("\n" + "=" * 58)
     print("Done.")
-    print(f"  Log     -> {TUNING_LOG}")
-    print(f"  Reports -> {ROOT / 'reports'}")
-    print(f"  Snaps   -> {SNAP_DIR}")
-    print("=" * 55)
+    print(f"  Tuning log -> {TUNING_LOG}")
+    print(f"  Reports    -> {ROOT/'reports'}")
+    print(f"  Snapshots  -> {SNAP_DIR}")
+    print("=" * 58)
 
 
 if __name__ == "__main__":
